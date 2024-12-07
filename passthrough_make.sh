@@ -10,17 +10,15 @@ FUSE_FLAGS=$(pkg-config --cflags --libs fuse)
 # LARGE_FILE_FLAGS="-D_FILE_OFFSET_BITS=64"
 IGNORE_DEPRECATED_WARNINGS="-Wno-deprecated-declarations"
 LIBS="-lssh"
-SRC="sffs.cpp"
-OUTPUT="sffs.o"
-BLOCK_SIZE=$1
-
-
+SRC="passthrough.cpp"
+OUTPUT="passthrough.o"
+# BLOCK_SIZE=$1
 
 # Compile the program
 echo "Compiling $SRC..."
 
 # Construct the command
-CMD="$CXX $VERSION $IGNORE_DEPRECATED_WARNINGS $WALL $SRC $FUSE_FLAGS $LARGE_FILE_FLAGS -I$INCLUDE_PATH -L$LIB_PATH $LIBS -o $OUTPUT -DBLOCK_SIZE=$BLOCK_SIZE"
+CMD="$CXX $VERSION $IGNORE_DEPRECATED_WARNINGS $WALL $SRC $FUSE_FLAGS $LARGE_FILE_FLAGS -I$INCLUDE_PATH -L$LIB_PATH $LIBS -o $OUTPUT"
 
 # Print the command
 echo "Running command: $CMD"
@@ -28,11 +26,6 @@ echo "Running command: $CMD"
 # Execute the command
 $CMD
 
-
-TO_RESET=$2
-if [ "$TO_RESET" = "reset" ]; then
-	echo "Resetting the target directory..."
-	rm something
-fi
-umount target
-./sffs.o --file_name=something -f -o rw target
+# rm something
+umount passthrough_target_dir
+./passthrough.o -f -o rw passthrough_target_dir

@@ -1,22 +1,27 @@
-#include <exception>
 # define FUSE_USE_VERSION 29
+
 
 # include <fuse.h>
 # include <iostream>
 # include <fstream>
+# include <sstream>
 # include <vector>
 # include <string>
 # include <unistd.h>
 # include <sys/types.h>
 # include <set>
+
+#define NDEBUG
 # include <assert.h>
+
 # include <map>
 # include <algorithm>
 
 
+#ifndef BLOCK_SIZE
+    #define BLOCK_SIZE 16384
+#endif
 
-// 4 KB blocks
-#define BLOCK_SIZE 4096
 #define BLOCK_NUMBER_SIZE 4
 #define BLOCK_NUMBERS_PER_BLOCK (BLOCK_SIZE / BLOCK_NUMBER_SIZE)
 #define MAX_BLOCKS (1UL << (BLOCK_NUMBER_SIZE*8))-1
@@ -65,6 +70,7 @@ struct b_file {
 };
 
 static void describe(b_file* f) {
+	return;
 	std::cout << "File " << f->name << " has " << f->data_blocks.size() << " blocks." << std::endl;
 
 	for (int i = 0; i < std::min(static_cast<int>( f->data_blocks.size()), 3); i++) {
@@ -87,6 +93,7 @@ struct b_directory {
 };
 
 static void describe(b_directory* root) {
+	return;
 	/* std::cout <<std::endl << std::endl; */
 	std::cout << "Directory " << root->name << " has " << root->directories.size() << " directories and " << root->files.size() << " files." << std::endl;
 	for (auto it = root->directories.begin(); it != root->directories.end(); it++) {
@@ -141,17 +148,19 @@ inline uint32_t get_next_block() {
     if (start < end) {
         STATE->free_block_ranges.insert(std::make_pair(start + 1, end));
     }
-	std::cout << "Allocating block " << start << std::endl;
+	/* std::cout << "Allocating block " << start << std::endl; */
     return start;
 }
 
 
 inline void read_block(std::fstream& file, uint32_t block_number, char* block, size_t size) {
 	auto offset = block_number * BLOCK_SIZE;
-	std::cout << "Reading block " << block_number << " at offset " << offset << std::endl;
+	/* std::cout << "Reading " << size << " bytes from block " << block_number << " at offset " << offset << "\n"; */
 	assert(file.good());
 
 	file.seekg(offset);
+	file.read(block, size);
+	assert(file.good());
 	assert(file.read(block, size));
 	assert(file.good());
 }
@@ -159,34 +168,48 @@ inline void read_block(std::fstream& file, uint32_t block_number, char* block, s
 
 inline void write_block(std::fstream& file, uint32_t block_number, void* block) {
     auto offset = block_number * BLOCK_SIZE;
-    std::cout << "Writing block " << block_number << " at offset " << offset << std::endl;
+
+    /* std::cout << "Writing block " << block_number << " at offset " << offset << std::endl; */
 
     // Ensure the stream is in a valid state
-    assert(file.good() && "Stream is not good before operation!");
+	if (!file.good()) {
+		std::cout << "Stream is not good before operation!" << std::endl;
+		exit(1);
+	}
 
     // Check the current file size
     file.seekp(0, std::ios::end);
     auto current_size = file.tellp();
-    assert(current_size != -1 && "Failed to determine file size!");
+	if (current_size == -1) {
+		std::cout << "Failed to determine file size!" << std::endl;
+		exit(1);
+	}
 
     // Seek to the target offset
     file.seekp(offset);
-    assert(file.good() && "Failed to seek to target offset!");
+	if (!file.good()) {
+		std::cout << "Stream is not good after seek!" << std::endl;
+		exit(1);
+	}
 
     // Verify the position before writing
     /* std::cout << "Start: " << file.tellp() << std::endl; */
 
     // Write the block
-    assert(file.write(reinterpret_cast<const char*>(block), BLOCK_SIZE) &&
-           "Failed to write block!");
+	file.write(reinterpret_cast<const char*>(block), BLOCK_SIZE);
+	if (!file.good()) {
+		std::cout << "Failed to write block!" << std::endl;
+		exit(1);
+	}
 
     // Verify the position after writing
     auto end = file.tellp();
-    assert(end == offset + BLOCK_SIZE &&
-           "tellp mismatch after writing block!");
+	if (end == -1) {
+		std::cout << "Failed to determine position after writing!" << std::endl;
+		exit(1);
+	}
 
-
-    std::cout << "Block written successfully at offset " << offset << std::endl;
+	/* std::cout << "Block written successfully at offset " << offset << std::endl; */
 }
 
 
@@ -414,25 +437,42 @@ void write_file_metadata(b_file* f) {
 	descriptor desc = {};
 	
 	auto parent_block = f->parent_block;
-	directory_block db;
+	directory_block db = {};
 	int index = 0;
 	bool found = false;
 
+ 	auto iteration_count = 0;
 	while(!found) {
+		iteration_count++;
+		if (iteration_count > 30) {
+			std::cout << "Infinite loop detected" << std::endl;
+			exit(1);
+		}
+		std::cout << "Looking for descriptor in block " << parent_block << std::endl;
 		read_block(STATE->file, parent_block, (char*)&db, sizeof(directory_block));
 
 		// Find matching descriptor
-		
+		//
+		std::cout << "Number of entries: " << db.num_entries << std::endl;
+		if (db.num_entries == 0) {
+			std::cout << "No entries in block " << parent_block << std::endl;
+			exit(1);
+			break;
+		}
+
 		for (int i = 0; i < db.num_entries; i++) {
+			/* std::cout<<db.descriptors[i].name<<std::endl; */
+			/* std::cout << "Comparing " << db.descriptors[i].name << " with " << f->name << std::endl; */
 			if (strcmp(db.descriptors[i].name, f->name.c_str()) == 0) {
 				desc = db.descriptors[i];
 				index = i;
 				found = true;
+				std::cout << "Found descriptor" << std::endl;
 				break;
 			}
 		}
 
-		if (!found) {
+		if (!found && db.next_block > 0) {
 			parent_block = db.next_block;
 		}
 	}
@@ -528,7 +568,8 @@ void write_file_metadata(b_file* f) {
 
 inline std::vector<std::string> parse_path(const std::string& path, char delimiter = '/') {
     std::vector<std::string> chunks;
-    std::istringstream stream(path);
+    std::stringstream stream(path);
+
     std::string chunk;
 
     while (std::getline(stream, chunk, delimiter)) {
@@ -616,7 +657,7 @@ static int sffs_getattr(const char *path, struct stat *stbuf) {
 }
 
 static int sffs_mkdir(const char *path, mode_t mode) {
-	std::cout << "sffs_mkdir: " << path << std::endl;
+	/* std::cout << "sffs_mkdir: " << path << std::endl; */
 
 	auto entries = parse_path(path);
 	auto root = STATE->root;
@@ -630,8 +671,8 @@ static int sffs_mkdir(const char *path, mode_t mode) {
 	}
 
 
-	std::cout << "Directory created: " << path << std::endl;
-	std::cout << "Parent " << root->name << " has " <<  root->directories.size() << " directories and " << root->files.size() << " files." << std::endl;
+	/* std::cout << "Directory created: " << path << std::endl; */
+	/* std::cout << "Parent " << root->name << " has " <<  root->directories.size() << " directories and " << root->files.size() << " files." << std::endl; */
 
 
 	return 0;
@@ -694,11 +735,11 @@ static int sffs_write(const char *path, const char *buf, size_t size, off_t offs
 
 	while (f->data_blocks.size()<= last_block) {
 		f->data_blocks.push_back(get_next_block());
-		std::cout << "Adding block " << f->data_blocks.back() << std::endl;
+		/* std::cout << "Adding block " << f->data_blocks.back() << std::endl; */
 		f->dirty_metadata = true;
 	}
 	if (f->size < offset + size) {
-		std::cout << "Updating size from " << f->size << " to " << offset + size << std::endl;
+		/* std::cout << "Updating size from " << f->size << " to " << offset + size << std::endl; */
 		f->size = offset + size;
 		f->dirty_metadata = true;
 	}
@@ -745,7 +786,7 @@ static int sffs_read(const char *path, char *buf, size_t size, off_t offset, str
 	auto block = first_block;
 	while (size > 0) {
 		auto block_number = f->data_blocks[block];
-		std::cout << "Reading " << size << " bytes from block " << block << std::endl;
+		/* std::cout << "Reading " << size << " bytes from block " << block << std::endl; */
 
 		auto start_offset = (block == first_block)? offset % BLOCK_SIZE : 0;
 
@@ -764,6 +805,8 @@ static int sffs_read(const char *path, char *buf, size_t size, off_t offset, str
 	return ptr;
 }
 
+
+// TODO: Flush the backing file as well
 static int sffs_flush(const char *path, struct fuse_file_info *fi) {
     std::cout << "sffs_flush: " << path << std::endl;
 
@@ -806,7 +849,14 @@ static void* sffs_init(struct fuse_conn_info *conn) {
 	assert(file.good());
 
 	std::set<uint32_t> visited;
+
+	auto start = std::chrono::high_resolution_clock::now();
 	b_directory* root = decode_directory(file, 0, visited);
+	auto end = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+	std::cout << "Decoding took " << duration.count() << " microseconds" << std::endl;
+
+
 	root->name = "/";
 	STATE->root = root;
 
@@ -905,6 +955,8 @@ long page_size() {
 
 
 int main(int argc, char *argv[]) {
+	std::cout <<"Block size: " << BLOCK_SIZE << " bytes" << std::endl;
+	/* std::ios::sync_with_stdio(false); */
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
 
